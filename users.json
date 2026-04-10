@@ -2,11 +2,16 @@
   "1896605901": {
     "city": "qoqon",
     "enabled": true,
-    "send_time": "00:00"
+    "send_time_type": "evening"
   },
   "6460723712": {
     "city": "qoqon",
     "enabled": true,
-    "send_time": "15:00"
+    "send_time_type": "morning"
+  },
+  "900544672": {
+    "city": "samarqand",
+    "enabled": false,
+    "send_time_type": "morning"
   }
 }

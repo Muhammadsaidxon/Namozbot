@@ -24,11 +24,26 @@ logging.basicConfig(
 def is_valid_time_format(value: str) -> bool:
     return bool(re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)", value))
 
-def get_main_menu():
+TIME_TYPE_MAP = {
+    "🌅 Bomdoddan oldin": "bomdod_before",
+    "☀️ Ertalab": "morning",
+    "🌇 Kechqurun": "evening"
+}
+
+def time_type_keyboard():
     keyboard = [
-        ["📍 Shahar tanlash", "⏰ Vaqt tanlash"],
-        ["🕋 Bugungi vaqtlar", "📋 Holat"],
-        ["⏸ To‘xtatish", "▶️ Qayta yoqish"],
+        ["🌅 Bomdoddan oldin"],
+        ["☀️ Ertalab"],
+        ["🌇 Kechqurun"],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+
+def get_main_menu():
+
+    keyboard = [
+        ["📍 Shahar tanlash", "⏰ Xabar vaqti"],
+        ["📅 Bugungi vaqtlar", "ℹ️ Holat"],
+        ["🔕 To‘xtatish", "🔔 Yoqish"],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -38,10 +53,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Bu bot sizga tanlagan shaharingizga mos namoz vaqtlari haqida har kuni xabar yuboradi.\n\n"
         "Quyidagicha ishlaydi:\n"
         "1) 📍 Shahar tanlash — shaharingizni tanlang.\n"
-        "2) ⏰ Vaqt tanlash — xabar kelib turadigan vaqtingizni belgilang.\n"
-        "3) 🕋 Bugungi vaqtlar — bugungi namoz vaqtlarini ko‘ring.\n"
-        "4) 📋 Holat — hozirgi sozlamalaringizni tekshiring.\n"
-        "5) ⏸ To‘xtatish / ▶️ Qayta yoqish — xabarlarni boshqaring.\n\n"
+        "2) ⏰ Xabar vaqti — xabar keladigan vaqtni tanlang.\n"
+        "3) 📅 Bugungi vaqtlar — bugungi namoz vaqtlarini ko‘ring.\n"
+        "4) ℹ️ Holat — hozirgi sozlamalaringizni ko‘ring.\n"
+        "5) 🔕 To‘xtatish / 🔔 Yoqish — xabarlarni boshqaring.\n\n"
         "Boshlash uchun pastdagi tugmalardan foydalaning.",
         reply_markup=get_main_menu()
     )
@@ -55,15 +70,15 @@ async def handle_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
         await set_city(update, context)
         return
 
-    if text == "⏰ Vaqt tanlash":
+    if text == "⏰ Xabar vaqti":
         await settime(update, context)
         return
 
-    if text == "🕋 Bugungi vaqtlar":
+    if text == "📅 Bugungi vaqtlar":
         await today(update, context)
         return
 
-    if text == "📋 Holat":
+    if text == "ℹ️ Holat":
         await status(update, context)
         return
 
@@ -71,12 +86,16 @@ async def handle_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
         await start(update, context)
         return
 
-    if text == "⏸ To‘xtatish":
+    if text == "🔕 To‘xtatish":
         await stop_daily(update, context)
         return
 
-    if text == "▶️ Qayta yoqish":
+    if text == "🔔 Yoqish":
         await resume_daily(update, context)
+        return
+
+    if text in TIME_TYPE_MAP:
+        await save_time_type(update, context)
         return
 
     if context.user_data.get("waiting_for_time"):
@@ -114,17 +133,44 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     city_region = users[user_id].get("city")
-    send_time = users[user_id].get("send_time", "00:05")
+    send_time_type = users[user_id].get("send_time_type", "morning")
     enabled = users[user_id].get("enabled", True)
 
     city_name = get_city_name_from_region(city_region) if city_region else "Tanlanmagan"
     state = "Yoqilgan" if enabled else "To‘xtatilgan"
 
+    # Map back to display name
+    time_type_display = {
+        "bomdod_before": "Bomdoddan 15 daqiqa oldin",
+        "morning": "Ertalab (08:00)",
+        "evening": "Kechqurun (19:00)"
+    }.get(send_time_type, send_time_type)
+
     await update.message.reply_text(
-        f"📋 Sizning holatingiz:\n\n"
-        f"Shahar: {city_name}\n"
-        f"Xabar vaqti: {send_time}\n"
-        f"Holat: {state}",
+        f"📍 Shahar: {city_name}\n"
+        f"⏰ Xabar vaqti: {time_type_display}\n"
+        f"🔔 Holat: {state}",
+        reply_markup=get_main_menu()
+    )
+
+
+async def save_time_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.message.from_user.id)
+    text = update.message.text.strip()
+
+    users = load_users()
+    if user_id not in users or "city" not in users[user_id]:
+        await update.message.reply_text("Avval 📍 Shahar tanlash orqali shaharingizni tanlang.", reply_markup=get_main_menu())
+        return
+
+    time_type = TIME_TYPE_MAP[text]
+    users[user_id]["send_time_type"] = time_type
+    save_users(users)
+
+    schedule_all_for_user(int(user_id), context)
+
+    await update.message.reply_text(
+        "✅ Xabar vaqti saqlandi.",
         reply_markup=get_main_menu()
     )
 
@@ -147,7 +193,7 @@ async def save_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     users[str(user_id)] = {
         "city": region,
         "enabled": True,
-        "send_time": old_data.get("send_time", "00:05"),
+        "send_time_type": old_data.get("send_time_type", "morning"),
     }
     save_users(users)
 
@@ -161,24 +207,9 @@ async def save_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def settime(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data["waiting_for_time"] = True
-
-    keyboard = [
-        ["01:00", "02:00", "03:00", "04:00", "05:00", "06:00"],
-        ["07:00", "08:00", "09:00", "10:00", "11:00", "12:00"],
-        ["13:00", "14:00", "15:00", "16:00", "17:00", "18:00"],
-        ["19:00", "20:00", "21:00", "22:00", "23:00", "00:00"],
-    ]
-    reply_markup = ReplyKeyboardMarkup(
-        keyboard,
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
-
     await update.message.reply_text(
-        "Kundalik xabar vaqtini tanlang yoki HH:MM formatida yozing.\n"
-        "Masalan: 05:00",
-        reply_markup=reply_markup
+        "Kundalik xabar vaqtini tanlang:",
+        reply_markup=time_type_keyboard()
     )
 
 
@@ -190,8 +221,13 @@ async def mytime(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Avval /setcity ni bosing.")
         return
 
-    send_time = users[user_id].get("send_time", "00:05")
-    await update.message.reply_text(f"Sizning kundalik xabar vaqtingiz: {send_time}")
+    send_time_type = users[user_id].get("send_time_type", "morning")
+    time_display = {
+        "bomdod_before": "Bomdoddan 15 daqiqa oldin",
+        "morning": "Ertalab (08:00)",
+        "evening": "Kechqurun (19:00)"
+    }.get(send_time_type, send_time_type)
+    await update.message.reply_text(f"Sizning kundalik xabar vaqtingiz: {time_display}")
 
 
 async def save_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -242,10 +278,13 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     times = get_prayer_times(region)
 
     if not times:
-        await update.message.reply_text("Namoz vaqtlarini olishda xatolik bo‘ldi.")
+        await update.message.reply_text(
+            "⚠️ Vaqtlarni olishda xatolik yuz berdi. Keyinroq urinib ko‘ring.",
+            reply_markup=get_main_menu()
+        )
         return
 
-    await update.message.reply_text(build_prayer_message(region, times))
+    await update.message.reply_text(build_prayer_message(region, times), reply_markup=get_main_menu())
 
 
 async def mycity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -280,7 +319,7 @@ async def stop_daily(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     save_users(users)
     remove_all_user_jobs(int(user_id), context)
 
-    await update.message.reply_text("Kundalik xabarlar va eslatmalar to‘xtatildi.")
+    await update.message.reply_text("Kundalik xabarlar va eslatmalar to‘xtatildi.", reply_markup=get_main_menu())
 
 
 async def resume_daily(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -295,7 +334,7 @@ async def resume_daily(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     save_users(users)
     schedule_all_for_user(int(user_id), context)
 
-    await update.message.reply_text("Kundalik xabarlar va eslatmalar qayta yoqildi.")
+    await update.message.reply_text("Kundalik xabarlar va eslatmalar qayta yoqildi.", reply_markup=get_main_menu())
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

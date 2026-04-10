@@ -20,6 +20,30 @@ def parse_clock_to_datetime(clock_str: str) -> datetime:
     return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
+def subtract_minutes(time_str: str, minutes: int) -> str:
+    dt = datetime.strptime(time_str, "%H:%M")
+    dt -= timedelta(minutes=minutes)
+    return dt.strftime("%H:%M")
+
+
+def resolve_send_time(user_data: dict, prayer_times: dict) -> str:
+    t = user_data.get("send_time_type", "morning")
+
+    if t == "bomdod_before":
+        bomdod = prayer_times.get("Bomdod")
+        if bomdod:
+            return subtract_minutes(bomdod, 15)
+        return "04:00"  # Fallback
+
+    elif t == "morning":
+        return "08:00"
+
+    elif t == "evening":
+        return "19:00"
+
+    return "08:00"  # Default
+
+
 def remove_jobs_by_prefix(user_id: int, context: ContextTypes.DEFAULT_TYPE, prefix: str) -> None:
     job_name_prefix = f"{prefix}_{user_id}"
     for job in context.job_queue.jobs():
@@ -128,7 +152,15 @@ def schedule_daily_summary_for_user(user_id: int, context: ContextTypes.DEFAULT_
     if not user_data or not user_data.get("enabled", True):
         return
 
-    send_time_str = user_data.get("send_time", "00:05")
+    region = user_data.get("city")
+    if not region:
+        return
+
+    times = get_prayer_times(region)
+    if not times:
+        return
+
+    send_time_str = resolve_send_time(user_data, times)
 
     remove_jobs_by_prefix(user_id, context, "summary")
 
@@ -174,9 +206,16 @@ async def restore_jobs(application) -> None:
 
         user_id = int(user_id_str)
 
+        region = user_data.get("city")
+        times = get_prayer_times(region)
+        if not times:
+            continue
+
+        send_time_str = resolve_send_time(user_data, times)
+
         application.job_queue.run_daily(
             send_daily_prayer_times,
-            time=parse_user_time(user_data.get("send_time", "00:05")),
+            time=parse_user_time(send_time_str),
             name=f"summary_{user_id}",
             data={"user_id": user_id},
         )
