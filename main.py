@@ -1,6 +1,9 @@
 import logging
 import asyncio
+import os
+import threading
 
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -29,6 +32,23 @@ logging.basicConfig(
 )
 
 
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+
+    def log_message(self, format, *args):
+        return
+
+
+def run_health_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    logging.info("Health server running on port %s", port)
+    server.serve_forever()
+
+
 TIME_TYPE_MAP = {
     "🌅 Bomdoddan oldin": "bomdod_before",
     "☀️ Ertalab": "morning",
@@ -50,6 +70,7 @@ MONTH_MAP = {
     "Dekabr": 12,
 }
 
+
 def time_type_keyboard():
     keyboard = [
         ["🌅 Bomdoddan oldin"],
@@ -57,6 +78,7 @@ def time_type_keyboard():
         ["🌇 Kechqurun"],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+
 
 def months_keyboard():
     keyboard = [
@@ -68,8 +90,8 @@ def months_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
 
-def get_main_menu():
 
+def get_main_menu():
     keyboard = [
         ["📍 Shahar tanlash", "⏰ Xabar vaqti"],
         ["📅 Bugungi vaqtlar", "🗓 Oylik PDF"],
@@ -77,6 +99,7 @@ def get_main_menu():
         ["🔕 To‘xtatish", "🔔 Yoqish"],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -91,6 +114,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Boshlash uchun pastdagi tugmalardan foydalaning.",
         reply_markup=get_main_menu()
     )
+
+
 async def handle_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
@@ -159,6 +184,7 @@ async def set_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=reply_markup
     )
 
+
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.message.from_user.id)
     users = load_users()
@@ -178,7 +204,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     city_name = get_city_name_from_region(city_region) if city_region else "Tanlanmagan"
     state = "Yoqilgan" if enabled else "To‘xtatilgan"
 
-    # Map back to display name
     time_type_display = {
         "bomdod_before": "Bomdoddan 15 daqiqa oldin",
         "morning": "Ertalab (08:00)",
@@ -199,7 +224,10 @@ async def save_time_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     users = load_users()
     if user_id not in users or "city" not in users[user_id]:
-        await update.message.reply_text("Avval 📍 Shahar tanlash orqali shaharingizni tanlang.", reply_markup=get_main_menu())
+        await update.message.reply_text(
+            "Avval 📍 Shahar tanlash orqali shaharingizni tanlang.",
+            reply_markup=get_main_menu()
+        )
         return
 
     time_type = TIME_TYPE_MAP[text]
@@ -287,7 +315,10 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    await update.message.reply_text(build_prayer_message(region, times), reply_markup=get_main_menu())
+    await update.message.reply_text(
+        build_prayer_message(region, times),
+        reply_markup=get_main_menu()
+    )
 
 
 async def month_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -295,7 +326,9 @@ async def month_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     users = load_users()
 
     if user_id not in users or "city" not in users[user_id]:
-        await update.message.reply_text("Avval 📍 Shahar tanlash orqali shaharingizni tanlang.")
+        await update.message.reply_text(
+            "Avval 📍 Shahar tanlash orqali shaharingizni tanlang."
+        )
         return
 
     await update.message.reply_text(
@@ -314,7 +347,9 @@ async def generate_specific_month_pdf(
     users = load_users()
 
     if user_id not in users or "city" not in users[user_id]:
-        await update.message.reply_text("Avval 📍 Shahar tanlash orqali shaharingizni tanlang.")
+        await update.message.reply_text(
+            "Avval 📍 Shahar tanlash orqali shaharingizni tanlang."
+        )
         return
 
     region = users[user_id]["city"]
@@ -325,12 +360,18 @@ async def generate_specific_month_pdf(
         f"⏳ {month_name} oyi uchun PDF tayyorlanmoqda..."
     )
     try:
-        logging.info("month_pdf started for user_id=%s region=%s month=%s", user_id, region, month_num)
+        logging.info(
+            "month_pdf started for user_id=%s region=%s month=%s",
+            user_id, region, month_num
+        )
         rows = await asyncio.to_thread(collect_month_times, region, now.year, month_num)
         if not rows:
             await update.message.reply_text("Ma’lumot olishda xatolik bo‘ldi.")
             return
+
         output_path = Path("generated") / f"{user_id}_{now.year}_{month_num:02d}_oylik.pdf"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
         build_prayer_pdf(
             title=f"{month_name} {now.year} - Namoz vaqtlari",
             city_name=city_name,
@@ -367,11 +408,11 @@ async def mycity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     city_name = get_city_name_from_region(region)
     enabled = users[user_id].get("enabled", True)
 
-    status = "yoqilgan" if enabled else "to‘xtatilgan"
+    status_text = "yoqilgan" if enabled else "to‘xtatilgan"
 
     await update.message.reply_text(
         f"Siz tanlagan shahar: {city_name}\n"
-        f"Holat: {status}"
+        f"Holat: {status_text}"
     )
 
 
@@ -380,14 +421,19 @@ async def stop_daily(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     users = load_users()
 
     if user_id not in users:
-        await update.message.reply_text("Siz hali ro‘yxatdan o‘tmagansiz. /setcity ni bosing.")
+        await update.message.reply_text(
+            "Siz hali ro‘yxatdan o‘tmagansiz. /setcity ni bosing."
+        )
         return
 
     users[user_id]["enabled"] = False
     save_users(users)
     remove_all_user_jobs(int(user_id), context)
 
-    await update.message.reply_text("Kundalik xabarlar va eslatmalar to‘xtatildi.", reply_markup=get_main_menu())
+    await update.message.reply_text(
+        "Kundalik xabarlar va eslatmalar to‘xtatildi.",
+        reply_markup=get_main_menu()
+    )
 
 
 async def resume_daily(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -402,12 +448,17 @@ async def resume_daily(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     save_users(users)
     schedule_all_for_user(int(user_id), context)
 
-    await update.message.reply_text("Kundalik xabarlar va eslatmalar qayta yoqildi.", reply_markup=get_main_menu())
+    await update.message.reply_text(
+        "Kundalik xabarlar va eslatmalar qayta yoqildi.",
+        reply_markup=get_main_menu()
+    )
 
 
 def main() -> None:
     if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN not found in .env file")
+        raise ValueError("BOT_TOKEN not found in environment variable")
+
+    threading.Thread(target=run_health_server, daemon=True).start()
 
     app = (
         ApplicationBuilder()

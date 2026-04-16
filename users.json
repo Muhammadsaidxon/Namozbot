@@ -13,5 +13,10 @@
     "city": "samarqand",
     "enabled": false,
     "send_time_type": "morning"
+  },
+  "8118013540": {
+    "city": "namangan",
+    "enabled": true,
+    "send_time_type": "morning"
   }
 }
