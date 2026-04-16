@@ -1,7 +1,7 @@
 import logging
-import re
+import asyncio
 
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -9,10 +9,18 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from datetime import datetime
+from pathlib import Path
 
-from config import BOT_TOKEN, CITIES
+from config import BOT_TOKEN, CITIES, UZBEKISTAN_TZ
 from storage import load_users, save_users
-from api import get_prayer_times, build_prayer_message, get_city_name_from_region
+from api import (
+    get_prayer_times,
+    build_prayer_message,
+    get_city_name_from_region,
+    collect_month_times,
+)
+from pdf_utils import build_prayer_pdf
 from scheduler import schedule_all_for_user, remove_all_user_jobs, restore_jobs
 
 logging.basicConfig(
@@ -21,13 +29,25 @@ logging.basicConfig(
 )
 
 
-def is_valid_time_format(value: str) -> bool:
-    return bool(re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)", value))
-
 TIME_TYPE_MAP = {
     "🌅 Bomdoddan oldin": "bomdod_before",
     "☀️ Ertalab": "morning",
     "🌇 Kechqurun": "evening"
+}
+
+MONTH_MAP = {
+    "Yanvar": 1,
+    "Fevral": 2,
+    "Mart": 3,
+    "Aprel": 4,
+    "May": 5,
+    "Iyun": 6,
+    "Iyul": 7,
+    "Avgust": 8,
+    "Sentabr": 9,
+    "Oktabr": 10,
+    "Noyabr": 11,
+    "Dekabr": 12,
 }
 
 def time_type_keyboard():
@@ -38,11 +58,22 @@ def time_type_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
 
+def months_keyboard():
+    keyboard = [
+        ["Yanvar", "Fevral", "Mart"],
+        ["Aprel", "May", "Iyun"],
+        ["Iyul", "Avgust", "Sentabr"],
+        ["Oktabr", "Noyabr", "Dekabr"],
+        ["⬅️ Orqaga"],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+
 def get_main_menu():
 
     keyboard = [
         ["📍 Shahar tanlash", "⏰ Xabar vaqti"],
-        ["📅 Bugungi vaqtlar", "ℹ️ Holat"],
+        ["📅 Bugungi vaqtlar", "🗓 Oylik PDF"],
+        ["ℹ️ Holat"],
         ["🔕 To‘xtatish", "🔔 Yoqish"],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -78,6 +109,18 @@ async def handle_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
         await today(update, context)
         return
 
+    if text == "🗓 Oylik PDF":
+        await month_pdf(update, context)
+        return
+
+    if text in MONTH_MAP:
+        await generate_specific_month_pdf(update, context, MONTH_MAP[text], text)
+        return
+
+    if text == "⬅️ Orqaga":
+        await update.message.reply_text("Asosiy menyu", reply_markup=get_main_menu())
+        return
+
     if text == "ℹ️ Holat":
         await status(update, context)
         return
@@ -96,10 +139,6 @@ async def handle_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if text in TIME_TYPE_MAP:
         await save_time_type(update, context)
-        return
-
-    if context.user_data.get("waiting_for_time"):
-        await save_time(update, context)
         return
 
     await save_city(update, context)
@@ -230,42 +269,6 @@ async def mytime(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(f"Sizning kundalik xabar vaqtingiz: {time_display}")
 
 
-async def save_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not context.user_data.get("waiting_for_time"):
-        return
-
-    if not update.message or not update.message.text:
-        return
-
-    user_id = str(update.message.from_user.id)
-    time_text = update.message.text.strip()
-
-    if not is_valid_time_format(time_text):
-        await update.message.reply_text(
-            "Vaqt noto‘g‘ri.\n"
-            "To‘g‘ri format: HH:MM\n"
-            "Masalan: 05:00"
-        )
-        return
-
-    users = load_users()
-    if user_id not in users or "city" not in users[user_id]:
-        context.user_data["waiting_for_time"] = False
-        await update.message.reply_text("Avval /setcity orqali shaharingizni tanlang.")
-        return
-
-    users[user_id]["send_time"] = time_text
-    save_users(users)
-
-    schedule_all_for_user(int(user_id), context)
-    context.user_data["waiting_for_time"] = False
-
-    await update.message.reply_text(
-        f"Kundalik yuborish vaqti saqlandi: {time_text}",
-        reply_markup=get_main_menu()
-    )
-
-
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.message.from_user.id)
     users = load_users()
@@ -285,6 +288,71 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     await update.message.reply_text(build_prayer_message(region, times), reply_markup=get_main_menu())
+
+
+async def month_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.message.from_user.id)
+    users = load_users()
+
+    if user_id not in users or "city" not in users[user_id]:
+        await update.message.reply_text("Avval 📍 Shahar tanlash orqali shaharingizni tanlang.")
+        return
+
+    await update.message.reply_text(
+        "Qaysi oy uchun PDF kerak? Tanlang:",
+        reply_markup=months_keyboard()
+    )
+
+
+async def generate_specific_month_pdf(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    month_num: int,
+    month_name: str,
+) -> None:
+    user_id = str(update.message.from_user.id)
+    users = load_users()
+
+    if user_id not in users or "city" not in users[user_id]:
+        await update.message.reply_text("Avval 📍 Shahar tanlash orqali shaharingizni tanlang.")
+        return
+
+    region = users[user_id]["city"]
+    city_name = get_city_name_from_region(region)
+    now = datetime.now(UZBEKISTAN_TZ)
+
+    wait_msg = await update.message.reply_text(
+        f"⏳ {month_name} oyi uchun PDF tayyorlanmoqda..."
+    )
+    try:
+        logging.info("month_pdf started for user_id=%s region=%s month=%s", user_id, region, month_num)
+        rows = await asyncio.to_thread(collect_month_times, region, now.year, month_num)
+        if not rows:
+            await update.message.reply_text("Ma’lumot olishda xatolik bo‘ldi.")
+            return
+        output_path = Path("generated") / f"{user_id}_{now.year}_{month_num:02d}_oylik.pdf"
+        build_prayer_pdf(
+            title=f"{month_name} {now.year} - Namoz vaqtlari",
+            city_name=city_name,
+            rows=rows,
+            output_path=str(output_path),
+        )
+
+        with open(output_path, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename=f"{city_name}_{month_name}_{now.year}.pdf",
+                caption=f"✅ {month_name} oyi uchun taqvim tayyor.",
+                reply_markup=get_main_menu()
+            )
+    except Exception as e:
+        logging.exception("month_pdf error: %s", e)
+        await update.message.reply_text("Oylik PDF yaratishda xatolik bo‘ldi.")
+    finally:
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
 
 
 async def mycity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -335,14 +403,6 @@ async def resume_daily(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     schedule_all_for_user(int(user_id), context)
 
     await update.message.reply_text("Kundalik xabarlar va eslatmalar qayta yoqildi.", reply_markup=get_main_menu())
-
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if context.user_data.get("waiting_for_time"):
-        await save_time(update, context)
-        return
-
-    await save_city(update, context)
 
 
 def main() -> None:
